@@ -37,7 +37,8 @@ dbDisconnect(db)
 setwd('~/Downloads')
 players <- read.csv('master.csv', stringsAsFactors = F)
 players <- players %>%
-  select(mlb_id, mlb_name, espn_pos)
+  select(mlb_id, mlb_name, espn_pos) %>%
+  filter(mlb_id != 466412) ## Filter out other Luis Perdomo
 
 ## Pull out pinch runner information for run assignment
 ## From action db - for purposes of replacing original batter with new runner
@@ -196,6 +197,8 @@ third_runners <- min_ab %>%
   filter(pitcher_score == pitcher.x) %>%
   mutate(third_run = run, pitcher_leave = pitcher.y, pitcher_scored = pitcher.x, id = on_3b) %>%
   select(gameday_link, inning, num.x, id, outs, third_run, pitcher_scored, pitcher_leave)
+
+
 
 ## Odds of scoring runs from each out/base combination
 ## Convert those odds to ERA assignment
@@ -443,13 +446,12 @@ all_runs$run_change <- all_runs$runs - all_runs$regular_runs
 
 all_runs_sp_victims <- all_runs %>%
   filter(espn_pos == 'SP') %>%
-  filter(ip > 50) %>%
+  filter(ip > 100) %>%
   filter(run_change <= 0) %>%
   mutate(era_change = inherited_era - regular_era) %>%
   arrange(run_change) %>%
-  mutate(wERA_runs = runs) %>%
-  select(mlb_name, ip, regular_runs, wERA_runs, run_change, regular_era, inherited_era, era_change)
-
+  mutate(wERA_runs = runs, wERA = inherited_era) %>%
+  select(mlb_name, ip, regular_runs, wERA_runs, run_change, regular_era, wERA, era_change)
 
 ## Sort RP by most weighted inherited runners allowed
 
@@ -458,15 +460,26 @@ all_runs_rp_lucky <- all_runs %>%
   filter(run_change >= 0) %>%
   mutate(era_change = inherited_era - regular_era) %>%
   arrange(-run_change) %>%
-  mutate(wERA_runs = runs) %>%
-  select(mlb_name, ip, regular_runs, wERA_runs, run_change, regular_era, inherited_era, era_change)
+  mutate(wERA_runs = runs, wERA = inherited_era) %>%
+  select(mlb_name, ip, regular_runs, wERA_runs, run_change, regular_era, wERA, era_change)
 
 all_runs_sp_victims[,c(2,4:length(all_runs_sp_victims))] <- sapply(all_runs_sp_victims[,c(2,4:length(all_runs_sp_victims))], rounder)
 all_runs_rp_lucky[,c(2,4:length(all_runs_rp_lucky))] <- sapply(all_runs_rp_lucky[,c(2,4:length(all_runs_sp_victims))], rounder)
 
-
 datatable(head(all_runs_sp_victims, 10))
 datatable(head(all_runs_rp_lucky, 10))
+
+library(ggplot2)
+
+ggplot(data = all_runs_rp_lucky, mapping = aes(x = regular_era, y = wERA)) +
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_abline(slope = 1, intercept = 0) +
+  coord_cartesian(xlim = c(0, 8), ylim = c(0,10)) +
+  scale_x_continuous(name = 'Regular ERA', breaks = c(1,2,3,4,5,6,7,8)) +
+  scale_y_continuous(name = 'wERA', breaks = c(1,2,3,4,5,6,7,8,9,10))
+
+?plot_ly
 
 ############### ADDS ################
 
