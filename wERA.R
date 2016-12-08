@@ -3,6 +3,7 @@ library(tidyverse)
 library(pitchRx)
 library(DBI)
 library(RPostgreSQL)
+library(DT)
 
 ## Create Database for all 2016 games using Postgres
 
@@ -16,7 +17,7 @@ db <- dbConnect(pg,
                 host = 'localhost', 
                 port = 5432,
                 dbname = .rs.askForPassword("Enter database:"))
-scrape(start = '2016-04-04', end = '2016-04-06', connect = db)
+scrape(start = '2016-04-03', end = '2016-10-02', connect = db)
 
 ## Turn into dataframes
 
@@ -36,7 +37,7 @@ dbDisconnect(db)
 setwd('~/Downloads')
 players <- read.csv('master.csv', stringsAsFactors = F)
 players <- players %>%
-  select(mlb_id, mlb_name)
+  select(mlb_id, mlb_name, espn_pos)
 
 ## Pull out pinch runner information for run assignment
 ## From action db - for purposes of replacing original batter with new runner
@@ -197,8 +198,9 @@ third_runners <- min_ab %>%
   select(gameday_link, inning, num.x, id, outs, third_run, pitcher_scored, pitcher_leave)
 
 ## Odds of scoring runs from each out/base combination
-## Convert those odds to assignment
-## 
+## Convert those odds to ERA assignment
+
+## Pull every situation from the 2016 season based on situation at start of atbat
 
 library(reshape2)
 run_odds <- pitchfull %>%
@@ -207,7 +209,11 @@ run_odds <- pitchfull %>%
   as.data.frame() %>%
   melt(id.vars = c('gameday_link', 'num', 'min_event_num', 'inning'), value.name = 'mlb_id')
 
+## Remove duplicate situations
+
 run_odds$dups <- duplicated(paste0(run_odds$gameday_link, run_odds$num, run_odds$inning, run_odds$variable))
+
+## Join with atbat outcome information
 
 run_odds <- run_odds %>%
   filter(dups == F) %>%
@@ -217,6 +223,8 @@ run_odds <- run_odds %>%
   filter(num.x <= num | is.na(num.x)) %>% ## Filter out runners who scored twice in an inning
   arrange(gameday_link, num, variable) %>%
   select(-dups)
+
+## Identify when a run is scored, and whether it was inherited
 
 run_odds$run <- ifelse(is.na(run_odds$run), 0, run_odds$run)
 run_odds$mlb_id <- ifelse(is.na(run_odds$mlb_id), 0, 1)
@@ -229,6 +237,8 @@ run_odds$dups <- duplicated(paste0(run_odds$gameday_link, run_odds$num, run_odds
 run_odds <- filter(run_odds, dups == F)
 run_odds <- filter(run_odds, outs <= 2)
 
+## Calculate odds of scoring in each situation
+
 final_odds <- run_odds %>%
   group_by(variable, mlb_id, outs) %>%
   summarise(count = n(),
@@ -238,8 +248,15 @@ final_odds <- run_odds %>%
   mutate(score_percentage = runs / count) %>%
   select(-mlb_id) %>%
   mutate(inherit_pitcher = 1 - score_percentage, replaced_pitcher = score_percentage) %>%
-  select(variable, outs, replaced_pitcher, inherit_pitcher)
-final_odds
+  select(variable, outs, replaced_pitcher, inherit_pitcher) 
+
+rounder <- function(var) {
+  v <- round(var, 2)
+  return(v)
+}  
+  
+final_odds[,3:4] <- sapply(final_odds[,3:4], rounder)
+
 ## Use for future expected vs. actual runs calc
 
 #batter_odds <- pitch %>%
@@ -264,7 +281,11 @@ final_odds
 #  mutate(inherit_pitcher = 1 - score_percentage, replaced_pitcher = score_percentage) %>%
 #  select(variable, outs, replaced_pitcher, inherit_pitcher)
 
-## Inherited runners scored from 1st, 2nd, 3rd & traditional
+############### Run assignment #######################
+
+## Inherited runners scored from 1st, 2nd, 3rd & traditional (no inheritance)
+
+## Runner from first
 
 first_run <- atbatFin %>%
   select(pitcher, gameday_link, inning, mlb_id, num.x, id, run) %>%
@@ -273,17 +294,25 @@ first_run <- atbatFin %>%
   left_join(filter(final_odds, variable == 'on_1b'), by = c('outs' = 'outs')) %>%
   select(pitcher_scored, pitcher_leave, replaced_pitcher, inherit_pitcher)
 
+## Assignment for pitcher who got scored on - runner on first
+
 first_run_sc <- first_run %>%
   select(pitcher_scored, inherit_pitcher) %>%
   mutate(pitcher = pitcher_scored, runs = inherit_pitcher) %>%
   select(pitcher, runs)
+
+## Assignment for pitcher who allowed runner on base - runner on first
 
 first_run_lv <- first_run %>%
   select(pitcher_leave, replaced_pitcher) %>%
   mutate(pitcher = pitcher_leave, runs = replaced_pitcher) %>%
   select(pitcher, runs)
 
+## Stack into one DF
+
 first_run_fin <- as.data.frame(rbind(first_run_sc, first_run_lv))
+
+## Runner from second
 
 second_run <- atbatFin %>%
   select(pitcher, gameday_link, inning, mlb_id, num.x, id, run) %>%
@@ -292,17 +321,25 @@ second_run <- atbatFin %>%
   left_join(filter(final_odds, variable == 'on_2b'), by = c('outs' = 'outs')) %>%
   select(pitcher_scored, pitcher_leave, replaced_pitcher, inherit_pitcher)
 
+## Assignment for pitcher who allowed run to score from 2nd
+
 second_run_sc <- second_run %>%
   select(pitcher_scored, inherit_pitcher) %>%
   mutate(pitcher = pitcher_scored, runs = inherit_pitcher) %>%
   select(pitcher, runs)
+
+## Assignment for pitcher who allowed runner to reach second
 
 second_run_lv <- second_run %>%
   select(pitcher_leave, replaced_pitcher) %>%
   mutate(pitcher = pitcher_leave, runs = replaced_pitcher) %>%
   select(pitcher, runs)
 
+## Runner from second data stacked
+
 second_run_fin <- as.data.frame(rbind(second_run_sc, second_run_lv))
+
+## Runner from Third
 
 third_run <- atbatFin %>%
   select(pitcher, gameday_link, inning, mlb_id, num.x, id, run) %>%
@@ -311,21 +348,29 @@ third_run <- atbatFin %>%
   left_join(filter(final_odds, variable == 'on_3b'), by = c('outs' = 'outs')) %>%
   select(pitcher_scored, pitcher_leave, replaced_pitcher, inherit_pitcher)
 
+## Assignment for pitcher who allowed runner to score from third
+
 third_run_sc <- third_run %>%
   select(pitcher_scored, inherit_pitcher) %>%
   mutate(pitcher = pitcher_scored, runs = inherit_pitcher) %>%
   select(pitcher, runs)
+
+## Assignment for pitcher who allowed runner to get to third
 
 third_run_lv <- third_run %>%
   select(pitcher_leave, replaced_pitcher) %>%
   mutate(pitcher = pitcher_leave, runs = replaced_pitcher) %>%
   select(pitcher, runs)
 
+## Runner on third stacked
+
 third_run_fin <- as.data.frame(rbind(third_run_sc, third_run_lv))
+
+## Traditional runner scored - no inheritance
 
 trad_run <- atbatFin %>%
   select(pitcher, gameday_link, inning, mlb_id, num.x, id, run) %>%
-  left_join(first_runners, by = c('gameday_link' = 'gameday_link', 'inning' = 'inning', 'id' = 'id')) 
+  left_join(first_runners, by = c('gameday_link' = 'gameday_link', 'inning' = 'inning', 'id' = 'id')) %>%
   filter(is.na(first_run)) %>%
   select(pitcher, gameday_link, inning, mlb_id, num.x.x, id, run) %>%
   left_join(second_runners, by = c('gameday_link' = 'gameday_link', 'inning' = 'inning', 'id' = 'id')) %>%
@@ -335,18 +380,14 @@ trad_run <- atbatFin %>%
   filter(is.na(third_run)) %>%
   mutate(runs = run) %>%
   select(pitcher, runs)
+  
+## Stack all run scored information together
 
 final_run <- as.data.frame(rbind(first_run_fin, rbind(second_run_fin, rbind(third_run_fin, trad_run))))
 
-reg_calc <- atbatFin %>%
-  select(pitcher, run) %>%
-  group_by(pitcher) %>%
-  summarise(regular_runs = sum(run)) %>%
-  as.data.frame()
+## Pull innings pitched for ERA calculation
 
-######### NEXT STEPS ################
-
-## Pull innings pitched
+## Calculate out/inning combination at the start & end of each pitchers appearance
 
 ip_lookup <- atbat_lookup
 ip_lookup$start <- atbat_lookup$inning + (ifelse(is.na(lag(ip_lookup$o)), 0,
@@ -362,10 +403,26 @@ ip <- min_ab %>%
   left_join(select(ip_lookup, start, ab_num), by = c('min_ab' = 'ab_num')) %>%
   left_join(select(ip_lookup, finish, ab_num), by = c('max_ab' = 'ab_num')) %>%
   mutate(ip = finish - start) %>%
-  select(pitcher, ip) %>%
+  select(pitcher, ip)
+
+ip$mid_inning <- ifelse(as.integer(ip$ip) - ip$ip != 0, 1, 0)
+
+ip <- ip %>%
   group_by(pitcher) %>%
-  summarise(ip = sum(ip)) %>%
+  summarise(ip = sum(ip),
+            appearances = n(),
+            mid_inning = sum(mid_inning))%>%
   as.data.frame()
+
+## Calculate traditional ERA
+
+reg_calc <- atbatFin %>%
+  select(pitcher, run) %>%
+  group_by(pitcher) %>%
+  summarise(regular_runs = sum(run)) %>%
+  as.data.frame()
+
+## Calculate inherited ERA
 
 all_runs <- final_run %>%
   group_by(pitcher) %>%
@@ -377,38 +434,45 @@ all_runs <- final_run %>%
   mutate(inherited_era = (runs / ip) * 9) %>%
   left_join(players, by = c('pitcher' = 'mlb_id'))
 
+## Change missing values to 0s & calculate ER assignment change from regular
+
 all_runs[is.na(all_runs)] <- 0
 all_runs$run_change <- all_runs$runs - all_runs$regular_runs
 
+## Sort SP by most weighted inherited runners allowed
+
 all_runs_sp_victims <- all_runs %>%
-  filter(ip > 100) %>%
+  filter(espn_pos == 'SP') %>%
+  filter(ip > 50) %>%
   filter(run_change <= 0) %>%
   mutate(era_change = inherited_era - regular_era) %>%
-  arrange(run_change)
+  arrange(run_change) %>%
+  mutate(wERA_runs = runs) %>%
+  select(mlb_name, ip, regular_runs, wERA_runs, run_change, regular_era, inherited_era, era_change)
+
+
+## Sort RP by most weighted inherited runners allowed
 
 all_runs_rp_lucky <- all_runs %>%
-  filter(ip > 20) %>%
+  filter(espn_pos == 'RP' & ip > 20) %>%
   filter(run_change >= 0) %>%
   mutate(era_change = inherited_era - regular_era) %>%
-  arrange(-run_change)
+  arrange(-run_change) %>%
+  mutate(wERA_runs = runs) %>%
+  select(mlb_name, ip, regular_runs, wERA_runs, run_change, regular_era, inherited_era, era_change)
 
-head(all_runs, 50)
+all_runs_sp_victims[,c(2,4:length(all_runs_sp_victims))] <- sapply(all_runs_sp_victims[,c(2,4:length(all_runs_sp_victims))], rounder)
+all_runs_rp_lucky[,c(2,4:length(all_runs_rp_lucky))] <- sapply(all_runs_rp_lucky[,c(2,4:length(all_runs_sp_victims))], rounder)
 
-head(all_runs_sp_victims)
-tail(all_runs_sp_victims)
-head(all_runs_rp_lucky)
 
-## Currently have assigment of inherited runners scored by what base they were on, number of outs, 
-## pitcher responsible, & pitcher who gave up the run & odds of scoring
-
-## Calculate total innings pitched for each pitcher (just add outs + innings to min_ab)
-## Divide runs by innings & done!
-
-## Also need to pull for all season
+datatable(head(all_runs_sp_victims, 10))
+datatable(head(all_runs_rp_lucky, 10))
 
 ############### ADDS ################
 
 ## Expected vs. actual runs allowed for RP - instead of just looking at scores for runs, 
 ## Can create a runs added / subtracted stat by looking at likelihood of inhereted runners getting stranded
 
+##### Major miss - pitchers who don't allow runner on base OR runner to score. 
+## Calc change in probability of scoring as assignment??
 
