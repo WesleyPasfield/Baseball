@@ -479,7 +479,7 @@ ggplot(data = all_runs_rp_lucky, mapping = aes(x = regular_era, y = wERA)) +
   scale_x_continuous(name = 'Regular ERA', breaks = c(1,2,3,4,5,6,7,8)) +
   scale_y_continuous(name = 'wERA', breaks = c(1,2,3,4,5,6,7,8,9,10))
 
-?plot_ly
+
 
 ############### ADDS ################
 
